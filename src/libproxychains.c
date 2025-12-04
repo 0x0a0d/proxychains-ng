@@ -41,13 +41,17 @@
 #include "common.h"
 #include "rdns.h"
 
+#include "argparse.h"
+#include "cli_override.h"
+#include "parsing.h"
+#include "config_print.h"
+
 #undef 		satosin
 #define     satosin(x)      ((struct sockaddr_in *) &(x))
 #define     SOCKADDR(x)     (satosin(x)->sin_addr.s_addr)
 #define     SOCKADDR_2(x)     (satosin(x)->sin_addr)
 #define     SOCKPORT(x)     (satosin(x)->sin_port)
 #define     SOCKFAMILY(x)     (satosin(x)->sin_family)
-#define     MAX_CHAIN 512
 
 #ifdef IS_SOLARIS
 #undef connect
@@ -85,7 +89,7 @@ pthread_once_t init_once = PTHREAD_ONCE_INIT;
 
 static int init_l = 0;
 
-static void get_chain_data(proxy_data * pd, unsigned int *proxy_count, chain_type * ct);
+static void get_chain_data(proxy_data * pd, unsigned int *proxy_count, chain_type * ct, cli_options *cli_opts);
 
 static void* load_sym(char* symname, void* proxyfunc, int is_mandatory) {
 	void *funcptr = dlsym(RTLD_NEXT, symname);
@@ -147,7 +151,7 @@ static void do_init(void) {
 	setup_hooks();
 
 	/* read the config file */
-	get_chain_data(proxychains_pd, &proxychains_proxy_count, &proxychains_ct);
+	get_chain_data(proxychains_pd, &proxychains_proxy_count, &proxychains_ct, NULL);
 	DUMP_PROXY_CHAIN(proxychains_pd, proxychains_proxy_count);
 
 	while(close_fds_cnt) true_close(close_fds[--close_fds_cnt]);
@@ -183,7 +187,7 @@ static void gcc_init(void) {
 #define INIT() init_lib_wrapper(__FUNCTION__)
 #endif
 
-
+/* Internal enum for legacy proxy_from_string parser */
 typedef enum {
 	RS_PT_NONE = 0,
 	RS_PT_SOCKS4,
@@ -192,6 +196,12 @@ typedef enum {
 } rs_proxyType;
 
 /*
+	Legacy parser for config file format
+	Kept for config file backward compatibility with legacy format:
+	"socks5 host port [user pass]" and URL format
+
+	Note: For CLI, use parse_proxy_url() from parsing.c instead.
+
   proxy_from_string() taken from rocksock network I/O library (C) rofl0r
   valid inputs:
 	socks5://user:password@proxy.domain.com:port
@@ -279,14 +289,26 @@ inv_string:
 	return 0;
 }
 
-static const char* bool_str(int bool_val) {
-	if(bool_val) return "true";
-	return "false";
+/* If library is preloaded but no network call occurs, ensure --show-config
+ * still triggers. Use constructor to run early in the process startup. */
+static void __attribute__((constructor)) show_config_constructor(void) {
+	cli_options cli_opts;
+	proxy_data pd_local[MAX_CHAIN];
+	unsigned count_local = 0;
+	chain_type ct_local = DYNAMIC_TYPE;
+
+	/* Read the CLI env options */
+	deserialize_cli_options_from_env(&cli_opts);
+	if (cli_opts.has_show_config && cli_opts.show_config) {
+		/* call get_chain_data which will handle printing and exiting */
+		get_chain_data(pd_local, &count_local, &ct_local, &cli_opts);
+		/* if for some reason we returned here, exit */
+		_exit(0);
+	}
 }
 
-#define STR_STARTSWITH(P, LIT) (!strncmp(P, LIT, sizeof(LIT)-1))
 /* get configuration from config file */
-static void get_chain_data(proxy_data * pd, unsigned int *proxy_count, chain_type * ct) {
+static void get_chain_data(proxy_data * pd, unsigned int *proxy_count, chain_type * ct, cli_options *cli_opts) {
 	int count = 0, port_n = 0, list = 0;
 	char buf[1024], type[1024], host[1024], user[1024];
 	char *buff, *env, *p;
@@ -295,6 +317,7 @@ static void get_chain_data(proxy_data * pd, unsigned int *proxy_count, chain_typ
 	char dnat_orig_addr[32], dnat_orig_port[32], dnat_new_addr[32], dnat_new_port[32];
 	char rdnsd_addr[32], rdnsd_port[8];
 	FILE *file = NULL;
+	cli_options cli_opts_local;
 
 	if(proxychains_got_chain_data)
 		return;
@@ -305,6 +328,21 @@ static void get_chain_data(proxy_data * pd, unsigned int *proxy_count, chain_typ
 	tcp_read_time_out = 4 * 1000;
 	tcp_connect_time_out = 10 * 1000;
 	*ct = DYNAMIC_TYPE;
+
+	/* If cli_opts is NULL, deserialize from environment */
+	if (!cli_opts) {
+		cli_opts = &cli_opts_local;
+		deserialize_cli_options_from_env(cli_opts);
+	}
+
+	/* Handle ignore-config-file mode */
+	if (cli_opts->ignore_config_file) {
+		if (cli_opts->has_debug_level && cli_opts->debug_level >= 1) {
+			fprintf(stderr,
+							LOG_PREFIX "ignoring config file, using CLI options only\n");
+		}
+		goto apply_cli_overrides;
+	}
 
 	env = get_config_path(getenv(PROXYCHAINS_CONF_FILE_ENV_VAR), buf, sizeof(buf));
 	if( ( file = fopen(env, "r") ) == NULL )
@@ -563,6 +601,17 @@ inv_host:
 #ifndef BROKEN_FCLOSE
 	fclose(file);
 #endif
+
+apply_cli_overrides:
+	/* Apply CLI overrides using the cli_override module */
+	{
+		unsigned int cli_proxy_count = count;
+		apply_all_cli_overrides(cli_opts, pd, &cli_proxy_count, ct);
+		if (cli_opts->has_proxy) {
+			count = cli_proxy_count;
+		}
+	}
+
 	if(!count) {
 		fprintf(stderr, "error: no valid proxy found in config\n");
 		exit(1);
@@ -570,6 +619,14 @@ inv_host:
 	*proxy_count = count;
 	proxychains_got_chain_data = 1;
 	PDEBUG("proxy_dns: %s\n", rdns_resolver_string(proxychains_resolver));
+	/* Print effective configuration if requested and exit */
+	if (cli_opts->has_show_config && cli_opts->show_config) {
+		print_effective_config(cli_opts, pd, count, *ct);
+		/* Avoid running the target program; exit here in the child process */
+		fflush(stdout);
+		fflush(stderr);
+		_exit(0);
+	}
 }
 
 /*******  HOOK FUNCTIONS  *******/

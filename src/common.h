@@ -5,6 +5,10 @@
 #define PROXYCHAINS_QUIET_MODE_ENV_VAR "PROXYCHAINS_QUIET_MODE"
 #define PROXYCHAINS_CONF_FILE "proxychains.conf"
 #define LOG_PREFIX "[proxychains] "
+
+/* Maximum number of proxies in chain */
+#define MAX_CHAIN 512
+
 #ifndef SYSCONFDIR
 #define SYSCONFDIR "/etc"
 #endif
@@ -18,6 +22,11 @@ extern const char *proxy_state_strmap[];
 char *get_config_path(char* default_path, char* pbuf, size_t bufsize);
 void pc_stringfromipv4(unsigned char *ip_buf_4_bytes, char *outbuf_16_bytes);
 int pc_isnumericipv4(const char* ipstring);
+
+/* Utility: return "true" or "false" string */
+static inline const char* bool_str(int bool_val) {
+	return bool_val ? "true" : "false";
+}
 
 //RcB: DEP "common.c"
 #endif

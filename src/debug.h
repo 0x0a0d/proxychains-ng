@@ -16,6 +16,13 @@
 
 # define PFUNC() do { PDEBUG("%s()\n", __FUNCTION__); } while(0)
 
+/* Runtime CLI debug macro - controlled by debug_level at runtime, not compile-time */
+#define PDEBUG_CLI(level, cli_opts, fmt, args...) do { \
+	if((cli_opts) && (cli_opts)->has_debug_level && (cli_opts)->debug_level >= (level)) { \
+		fprintf(stderr, "[proxychains] " fmt, ## args); \
+	} \
+} while(0)
+
 #include "core.h"
 void dump_proxy_chain(proxy_data *pchain, unsigned int count);
 
