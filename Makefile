@@ -81,7 +81,7 @@ install-tools: $(ALL_TOOLS:%=$(DESTDIR)$(bindir)/%)
 install-config: $(ALL_CONFIGS:src/%=$(DESTDIR)$(sysconfdir)/%)
 install-zsh-completion: $(ZSH_COMPLETION:completions/zsh/%=$(DESTDIR)$(zshcompletiondir)/%)
 
-clean:
+clean: clean-tests
 	rm -f $(ALL_LIBS)
 	rm -f $(ALL_TOOLS)
 	rm -f $(OBJS) $(LOBJS) $(DOBJS)
@@ -105,5 +105,13 @@ $(PXCHAINS): $(OBJS)
 $(PXCHAINS_D): $(DOBJS)
 	$(CC) $^ $(FAT_BIN_LDFLAGS) $(USER_LDFLAGS) -o $@
 
+# Test targets
+run-tests: $(LOBJS)
+	sh tests/inline/tests-inline.sh
 
-.PHONY: all clean install install-config install-libs install-tools install-zsh-completion
+clean-tests:
+	rm -f tests/inline/test_parsing_proxy tests/inline/test_parsing_localnet tests/inline/test_parsing_dnat tests/inline/test_argparse tests/inline/test_edge_cases
+	rm -rf tests/inline/*.dSYM
+
+.PHONY: all clean install install-config install-libs install-tools install-zsh-completion \
+        run-tests clean-tests

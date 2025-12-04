@@ -22,3 +22,8 @@ stamp-h
 .DS_Store
 .idea
 .vscode
+
+# Ignore all files in tests/inline/
+tests/inline/*
+# Except files with an extension (exclude compiled files)
+!tests/inline/*.*
