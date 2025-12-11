@@ -203,13 +203,41 @@ check_contains "multi proxy (second)" "http.*10.0.0.1.*8080" "$output"
 output=$($CLI --proxy socks5://127.0.0.1:1080 --config 2>&1)
 check_contains "--proxy URL" "socks5" "$output"
 
-# Hostname in URL
-output=$($CLI -P http://proxy.example.com:8080 --config 2>&1)
-check_contains "-P hostname URL" "proxy.example.com" "$output"
-
 # IPv6 in URL
 output=$($CLI -P "socks5://[::1]:1080" --config 2>&1)
 check_contains "-P IPv6 URL" "::1" "$output"
+
+# ============================================================
+echo ""
+echo "--- DNS Resolution ---"
+# ============================================================
+
+# localhost should resolve to 127.0.0.1
+output=$($CLI -P socks5://localhost:1080 --config 2>&1)
+check_contains "localhost resolves to IP" "127.0.0.1" "$output"
+check_not_contains "localhost not in output" "localhost" "$output"
+
+# google.com should resolve to IPv4
+output=$($CLI -P socks5://google.com:1080 --config 2>&1)
+# Check that output contains IPv4 pattern (not the domain name)
+if echo "$output" | grep -qE 'socks5[[:space:]]+[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+[[:space:]]+1080'; then
+  pass "google.com resolves to IPv4"
+else
+  fail "google.com resolves to IPv4" "IPv4 address" "$output"
+fi
+check_not_contains "google.com not in output" "google.com" "$output"
+
+# IPv4 should remain unchanged
+output=$($CLI -P socks5://8.8.8.8:1080 --config 2>&1)
+check_contains "IPv4 unchanged" "8.8.8.8" "$output"
+
+# IPv6 should remain unchanged
+output=$($CLI -P "socks5://[2001:4860:4860::8888]:1080" --config 2>&1)
+check_contains "IPv6 unchanged" "2001:4860:4860::8888" "$output"
+
+# Unresolvable domain should error
+output=$($CLI -P socks5://nonexistent.invalid.domain.test:1080 --config 2>&1) || true
+check_contains "unresolvable domain error" "Cannot resolve hostname" "$output"
 
 # ============================================================
 echo ""

@@ -74,6 +74,79 @@ url_decode() {
   printf '%b' "$(echo "$1" | sed 's/+/ /g; s/%\([0-9A-Fa-f][0-9A-Fa-f]\)/\\x\1/g')"
 }
 
+# Check if string is valid IPv4 or IPv6 address
+is_ip_address() {
+  addr="$1"
+  # IPv4: x.x.x.x
+  if echo "$addr" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
+    return 0
+  fi
+  # IPv6: contains colons (simplified check)
+  if echo "$addr" | grep -qE '^[0-9a-fA-F:]+$' && echo "$addr" | grep -q ':'; then
+    return 0
+  fi
+  return 1
+}
+
+# Resolve hostname to IP address
+# Priority: getent > dig > host > nslookup > ping
+resolve_host() {
+  hostname="$1"
+  
+  # Skip if already an IP
+  if is_ip_address "$hostname"; then
+    echo "$hostname"
+    return 0
+  fi
+  
+  # 1. getent hosts
+  if command -v getent >/dev/null 2>&1; then
+    resolved=$(getent hosts "$hostname" 2>/dev/null | awk '{print $1; exit}')
+    if [ -n "$resolved" ]; then
+      echo "$resolved"
+      return 0
+    fi
+  fi
+  
+  # 2. dig +short
+  if command -v dig >/dev/null 2>&1; then
+    resolved=$(dig +short "$hostname" 2>/dev/null | grep -E '^[0-9.]+$' | head -1)
+    if [ -n "$resolved" ]; then
+      echo "$resolved"
+      return 0
+    fi
+  fi
+  
+  # 3. host
+  if command -v host >/dev/null 2>&1; then
+    resolved=$(host "$hostname" 2>/dev/null | awk '/has address/ {print $4; exit}')
+    if [ -n "$resolved" ]; then
+      echo "$resolved"
+      return 0
+    fi
+  fi
+  
+  # 4. nslookup
+  if command -v nslookup >/dev/null 2>&1; then
+    resolved=$(nslookup "$hostname" 2>/dev/null | awk '/^Address: / {print $2; exit}')
+    if [ -n "$resolved" ]; then
+      echo "$resolved"
+      return 0
+    fi
+  fi
+  
+  # 5. ping -c1
+  resolved=$(ping -c 1 -W 2 "$hostname" 2>/dev/null | head -1 | sed -n 's/.*(\([0-9.]*\)).*/\1/p')
+  if [ -n "$resolved" ]; then
+    echo "$resolved"
+    return 0
+  fi
+  
+  # Resolution failed
+  echo "Error: Cannot resolve hostname '$hostname'" >&2
+  return 1
+}
+
 # Parse proxy URL: protocol://[user:pass@]host:port
 # Output: protocol\thost\tport[\tuser\tpass]
 # Supports URL-encoded special chars in user/pass
@@ -119,11 +192,14 @@ parse_proxy_url() {
     return 1
   fi
   
+  # Resolve hostname to IP if it's a domain
+  resolved_host=$(resolve_host "$host") || return 1
+  
   # Output in proxychains.conf format
   if [ -n "$user" ]; then
-    printf '%s\t%s\t%s\t%s\t%s\n' "$proto" "$host" "$port" "$user" "$pass"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$proto" "$resolved_host" "$port" "$user" "$pass"
   else
-    printf '%s\t%s\t%s\n' "$proto" "$host" "$port"
+    printf '%s\t%s\t%s\n' "$proto" "$resolved_host" "$port"
   fi
 }
 
